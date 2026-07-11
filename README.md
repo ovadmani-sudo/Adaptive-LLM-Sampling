@@ -628,3 +628,4 @@ path, reconstructs the message the way a real client would (concatenating
 the original multi-line indented code exactly — the previous
 `strings.Fields`-based implementation would have flattened it to one line
 with no indentation.
+
