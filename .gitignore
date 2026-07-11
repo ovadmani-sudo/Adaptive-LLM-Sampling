@@ -1,0 +1,9 @@
+# Compiled binary — build with `go build -o llama-dyn-proxy .`
+/llama-dyn-proxy
+
+# Runtime logs and retry trajectories
+proxy_*.log
+retry_log_*.jsonl
+
+# Local scratch/backup snapshots
+/bkp/
