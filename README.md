@@ -1,11 +1,4 @@
-[![Stars](https://img.shields.io/github/stars/ovadmani-sudo/adaptive-sampler-proxy?style=flat-square)](https://github.com/ovadmani-sudo/adaptive-sampler-proxy/stargazers)
-[![Release](https://img.shields.io/github/v/release/ovadmani-sudo/adaptive-sampler-proxy?style=flat-square)](https://github.com/ovadmani-sudo/adaptive-sampler-proxy/releases)
-[![Issues](https://img.shields.io/github/issues/ovadmani-sudo/adaptive-sampler-proxy?style=flat-square)](https://github.com/ovadmani-sudo/adaptive-sampler-proxy/issues)
-[![License](https://img.shields.io/github/license/ovadmani-sudo/adaptive-sampler-proxy?style=flat-square)](https://github.com/ovadmani-sudo/adaptive-sampler-proxy/blob/main/LICENSE)
-[![Go Report Card](https://goreportcard.com/badge/github.com/ovadmani-sudo/adaptive-sampler-proxy?style=flat-square)](https://goreportcard.com/report/github.com/ovadmani-sudo/adaptive-sampler-proxy)
-
-
-# llama-dyn-proxy
+# adaptive-sampler-proxy
 ## Dashboard
 
 ![Dashboard Screenshot](dashboard.png)
