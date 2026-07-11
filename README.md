@@ -1,4 +1,7 @@
 # llama-dyn-proxy
+## Dashboard
+
+![Dashboard Screenshot](dashboard.png)
 
 A lightweight reverse proxy that sits between an OpenAI-compatible client
 (e.g. Cline's "OpenAI Compatible" provider) and a local `llama-server`
