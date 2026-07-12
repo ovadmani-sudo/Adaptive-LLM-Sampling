@@ -4,8 +4,8 @@
 ![Dashboard Screenshot](dashboard.png)
 
 A lightweight reverse proxy that sits between an OpenAI-compatible client
-(e.g. Cline's "OpenAI Compatible" provider) and a local `llama-server`
-instance. It classifies each chat completion request by task type,
+(e.g. Cline's "OpenAI Compatible" agent) and a local `llama-server`
+instance or remote provider. It classifies each chat completion request by task type,
 injects sampling/reasoning parameters accordingly, detects bad outputs
 (repetition, truncation, invalid JSON in fenced code blocks), retries with
 adjusted parameters, and shows a live terminal dashboard.
