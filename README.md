@@ -1,4 +1,4 @@
-# adaptive LLM sampling
+# Adaptive LLM Sampling
 ## Dashboard
 
 ![Dashboard Screenshot](dashboard.png)
