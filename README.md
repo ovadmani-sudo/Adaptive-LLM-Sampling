@@ -1,4 +1,4 @@
-# adaptive-sampler-proxy
+# adaptive- LLM sampling
 ## Dashboard
 
 ![Dashboard Screenshot](dashboard.png)
