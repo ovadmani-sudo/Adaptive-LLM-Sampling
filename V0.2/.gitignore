@@ -1,0 +1,19 @@
+# Compiled binary — build with `go build -o llama-dyn-proxy .`
+/llama-dyn-proxy
+
+# Runtime logs and retry trajectories
+proxy_*.log
+retry_log_*.jsonl
+
+# Local scratch/backup snapshots
+/bkp/
+
+# Forward-proxy mode CA: cert/generate_certs.sh is the reusable recipe
+# (source, tracked); everything it generates — private keys, certs, the
+# openssl.cnf it writes, the .srl serial file — is instance-specific
+# generated output, not source, and root.key/intermediate.key are real
+# private keys that must never be committed. Each clone should run the
+# script to generate its own local CA rather than reuse anyone else's.
+cert/*
+!cert/generate_certs.sh
+!cert/README.md

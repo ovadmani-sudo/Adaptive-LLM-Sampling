@@ -1,0 +1,38 @@
+[
+  {
+    "provider": "forward-proxy",
+    "model": "deepseek/deepseek-v4-flash",
+    "bucket": "strict_code",
+    "samples": 2,
+    "sum_prompt_tokens": 13189,
+    "sum_completion_tokens": 149,
+    "sum_latency_ms": 5099,
+    "min_tokens_per_second": 28.411083830235004,
+    "max_tokens_per_second": 30.249110320284693,
+    "last_updated": "2026-07-18T01:25:37.856802883+03:00"
+  },
+  {
+    "provider": "forward-proxy",
+    "model": "cline-pass/minimax-m3",
+    "bucket": "strict_code",
+    "samples": 3,
+    "sum_prompt_tokens": 20366,
+    "sum_completion_tokens": 488,
+    "sum_latency_ms": 10886,
+    "min_tokens_per_second": 9.490238611713666,
+    "max_tokens_per_second": 81.97663282895996,
+    "last_updated": "2026-07-18T01:54:13.529843366+03:00"
+  },
+  {
+    "provider": "forward-proxy",
+    "model": "tencent/hy3:free",
+    "bucket": "strict_code",
+    "samples": 5,
+    "sum_prompt_tokens": 18373,
+    "sum_completion_tokens": 7718,
+    "sum_latency_ms": 136953,
+    "min_tokens_per_second": 1.1815675462780622,
+    "max_tokens_per_second": 61.14777044591082,
+    "last_updated": "2026-07-18T18:12:56.93836607+03:00"
+  }
+]

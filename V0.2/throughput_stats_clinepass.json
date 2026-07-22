@@ -1,0 +1,98 @@
+[
+  {
+    "provider": "clinepass",
+    "model": "stepfun/step-3.7-flash",
+    "bucket": "strict_code",
+    "samples": 307,
+    "sum_prompt_tokens": 3902567,
+    "sum_completion_tokens": 347449,
+    "sum_latency_ms": 2465562,
+    "min_tokens_per_second": 9.688581314878892,
+    "max_tokens_per_second": 48321.42857142857,
+    "last_updated": "2026-07-19T18:55:07.973029997+03:00"
+  },
+  {
+    "provider": "clinepass",
+    "model": "deepseek/deepseek-v4-flash",
+    "bucket": "strict_code",
+    "samples": 100,
+    "sum_prompt_tokens": 3337531,
+    "sum_completion_tokens": 100613,
+    "sum_latency_ms": 502764,
+    "min_tokens_per_second": 22.865236746256574,
+    "max_tokens_per_second": 16500,
+    "last_updated": "2026-07-20T19:13:52.374430842+03:00"
+  },
+  {
+    "provider": "clinepass",
+    "model": "cline-pass/minimax-m3",
+    "bucket": "exploratory_code",
+    "samples": 37,
+    "sum_prompt_tokens": 249688,
+    "sum_completion_tokens": 5349,
+    "sum_latency_ms": 109269,
+    "min_tokens_per_second": 3.1471282454760034,
+    "max_tokens_per_second": 84.57755137888635,
+    "last_updated": "2026-07-18T13:54:17.869383065+03:00"
+  },
+  {
+    "provider": "clinepass",
+    "model": "cline-pass/minimax-m3",
+    "bucket": "strict_code",
+    "samples": 1375,
+    "sum_prompt_tokens": 21682063,
+    "sum_completion_tokens": 220970,
+    "sum_latency_ms": 3506019,
+    "min_tokens_per_second": 2.4922118380062304,
+    "max_tokens_per_second": 191.9889502762431,
+    "last_updated": "2026-07-18T17:43:04.326405073+03:00"
+  },
+  {
+    "provider": "clinepass",
+    "model": "cline-pass/minimax-m3",
+    "bucket": "architecture",
+    "samples": 9,
+    "sum_prompt_tokens": 6005,
+    "sum_completion_tokens": 370,
+    "sum_latency_ms": 15790,
+    "min_tokens_per_second": 4.916420845624386,
+    "max_tokens_per_second": 43.23175053153791,
+    "last_updated": "2026-07-18T17:35:19.410662633+03:00"
+  },
+  {
+    "provider": "clinepass",
+    "model": "cline-pass/minimax-m3",
+    "bucket": "explanation",
+    "samples": 29,
+    "sum_prompt_tokens": 791166,
+    "sum_completion_tokens": 7376,
+    "sum_latency_ms": 107965,
+    "min_tokens_per_second": 19.863791146424518,
+    "max_tokens_per_second": 106.5448177738864,
+    "last_updated": "2026-07-18T15:47:26.769560098+03:00"
+  },
+  {
+    "provider": "clinepass",
+    "model": "cline-pass/deepseek-v4-flash",
+    "bucket": "strict_code",
+    "samples": 36,
+    "sum_prompt_tokens": 113294,
+    "sum_completion_tokens": 5222,
+    "sum_latency_ms": 93135,
+    "min_tokens_per_second": 15.393226980128743,
+    "max_tokens_per_second": 559.3220338983051,
+    "last_updated": "2026-07-21T19:30:32.579002488+03:00"
+  },
+  {
+    "provider": "clinepass",
+    "model": "cline-pass/deepseek-v4-flash",
+    "bucket": "architecture",
+    "samples": 1,
+    "sum_prompt_tokens": 621,
+    "sum_completion_tokens": 192,
+    "sum_latency_ms": 2691,
+    "min_tokens_per_second": 71.3489409141583,
+    "max_tokens_per_second": 71.3489409141583,
+    "last_updated": "2026-07-18T15:51:15.915641264+03:00"
+  }
+]
