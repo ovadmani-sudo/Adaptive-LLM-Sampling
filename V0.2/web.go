@@ -43,6 +43,7 @@ func (wp *WebPanel) Handler() http.Handler {
 	mux.HandleFunc("/api/models", wp.handleModels)
 	mux.HandleFunc("/api/model", wp.handleSetModel)
 	mux.HandleFunc("/api/vision", wp.handleVision)
+	mux.HandleFunc("/api/system_prompt", wp.handleSystemPrompt)
 	return mux
 }
 
@@ -100,20 +101,17 @@ func (wp *WebPanel) handleIndex(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(controlPanelHTML))
 }
 
-// handleStatus returns the current listener table, forced bucket, and
-// throughput snapshot — everything the panel needs to render on load and on
-// each poll after a control action.
+// handleStatus returns the current listener table (each row carrying its
+// own forced_bucket/vision_describe/system_prompt — all per-listener, see
+// ListenerStatus) and the throughput snapshot — everything the panel
+// needs to render on load and on each poll after a control action.
+// system_prompts is the one genuinely global piece: the menu of
+// available [system_prompt.*] names, identical for every listener.
 func (wp *WebPanel) handleStatus(w http.ResponseWriter, r *http.Request) {
-	bucket, forced := wp.sup.CurrentForcedBucket()
-	fb := ""
-	if forced {
-		fb = string(bucket)
-	}
 	resp := map[string]any{
-		"listeners":       wp.sup.Status(),
-		"forced_bucket":   fb,
-		"throughput":      wp.throughputSnapshot(),
-		"vision_describe": wp.sup.VisionDescribeEnabled(),
+		"listeners":      wp.sup.Status(),
+		"throughput":     wp.throughputSnapshot(),
+		"system_prompts": wp.sup.SystemPromptNames(),
 	}
 	writeJSON(w, resp)
 }
@@ -227,33 +225,53 @@ func (wp *WebPanel) handleAlert(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"listeners": wp.sup.Status()})
 }
 
-// handleBucket forces (or clears) the classification mode across all backends:
-// POST /api/bucket?bucket=strict_code|exploratory_code|explanation|architecture|""
+// handleBucket forces (or clears) the classification mode on ONE listener:
+// POST /api/bucket?name=<listener>&bucket=strict_code|exploratory_code|explanation|architecture|agentic_loop|""
 func (wp *WebPanel) handleBucket(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "POST only", http.StatusMethodNotAllowed)
 		return
 	}
+	name := r.URL.Query().Get("name")
 	b := r.URL.Query().Get("bucket")
-	if b == "" {
-		wp.sup.ClearForcedBucketAll()
-	} else {
-		wp.sup.SetForcedBucketAll(TaskBucket(b))
+	if err := wp.sup.SetForcedBucket(name, TaskBucket(b)); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
 	}
-	writeJSON(w, map[string]any{"forced_bucket": b})
+	writeJSON(w, map[string]any{"listeners": wp.sup.Status()})
 }
 
-// handleVision toggles the GLOBAL vision-describe pipeline (all backends in
-// lock-step — see Supervisor.SetVisionDescribeAll):
-// POST /api/vision?on=true|false
+// handleVision toggles [vision_describe] on ONE listener:
+// POST /api/vision?name=<listener>&on=true|false
 func (wp *WebPanel) handleVision(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "POST only", http.StatusMethodNotAllowed)
 		return
 	}
+	name := r.URL.Query().Get("name")
 	on, _ := strconv.ParseBool(r.URL.Query().Get("on"))
-	wp.sup.SetVisionDescribeAll(on)
-	writeJSON(w, map[string]any{"vision_describe": wp.sup.VisionDescribeEnabled()})
+	if err := wp.sup.SetVisionDescribe(name, on); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	writeJSON(w, map[string]any{"listeners": wp.sup.Status()})
+}
+
+// handleSystemPrompt selects a [system_prompt.*] entry on ONE listener:
+// POST /api/system_prompt?name=<listener>&prompt=<name|empty>
+// An empty (or omitted) prompt clears back to no injection.
+func (wp *WebPanel) handleSystemPrompt(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+	name := r.URL.Query().Get("name")
+	prompt := r.URL.Query().Get("prompt")
+	if err := wp.sup.SetSystemPrompt(name, prompt); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	writeJSON(w, map[string]any{"listeners": wp.sup.Status()})
 }
 
 func writeJSON(w http.ResponseWriter, v any) {

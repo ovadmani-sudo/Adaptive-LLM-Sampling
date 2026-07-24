@@ -217,6 +217,22 @@ top_k = 80
 repeat_penalty = 1.0
 thinking_budget_tokens = 4096
 
+# agentic_loop is a FORCE-ONLY bucket: it has no classification keywords
+# (and is not in priority_order), so it never auto-triggers on message
+# content — activate it manually from the dashboard/web panel's
+# classification-mode control when starting a long, iterative agent task
+# (complex installs, many tool-call loops and failed attempts), and clear
+# back to auto-detect when done. Keywords can't reliably identify this
+# kind of task (the messages look like ordinary strict_code turns), which
+# is why it's manual: strict_code-grade precision sampling, but with a
+# much larger reasoning budget for working through repeated failures.
+[preset.agentic_loop]
+temperature = 0.2
+top_p = 0.9
+top_k = 40
+repeat_penalty = 1.0
+thinking_budget_tokens = 8192
+
 [detection]
 repetition_ngram_size = 12
 repetition_min_repeats = 3
@@ -397,6 +413,65 @@ model = stepfun/step-3.7-flash
 # "/chat/completions"). Empty = the local llama-server from [server].
 base_url = https://api.cline.bot/api/v1
 api_key =
+
+# Named, selectable system prompts — pick one live from the web panel's
+# dropdown (global, applies to every listener). The selected prompt's
+# text is PREPENDED to whatever system message the client itself sent
+# (or becomes the system message if the client sent none) — it never
+# replaces the client's own content, so an agent tool's own tool-definition
+# system prompt survives underneath it. Loaded once at startup and never
+# re-read per request: the same text is prepended the same way every
+# time for a given selection, which is what lets llama-server's
+# --cache-reuse prefix cache actually reuse it instead of missing on
+# every request. Section name after "system_prompt." is the name shown
+# in the dropdown; "text" is a triple-quoted multi-line value (INI
+# syntax — leading/trailing blank lines are trimmed automatically). None
+# selected by default (empty selection = no injection at all).
+[system_prompt.research]
+text = """
+You are a deep research assistant. You can have natural multi-turn conversations with users on any topic.
+
+## Daily Chat & Simple Questions
+For everyday conversations, greetings, opinions, coding help, factual lookups, definitions, calculations, explanations, and any question you can confidently answer from your knowledge — just respond directly and naturally in the user's language as Intern-A1. Do NOT use any tools for these.
+
+## Research & Search Questions
+Only when the user's question requires up-to-date information, in-depth investigation, multi-source verification, or involves recent events, niche topics, or anything you are uncertain about, use the available tool **web_search_exa**.
+
+Research strategy:
+- Start with a focused search query to get an overview.
+- If the initial search is insufficient, refine your query with more specific terms.
+- Stop searching once you have enough information to provide a comprehensive answer. Do not over-research.
+"""
+
+[system_prompt.code]
+text = """
+## CODE QUALITY (all languages)
+1. Before code that manipulates indices/pointers/offsets/cursors, state
+   the convention in a comment (0- or 1-based, inclusive/exclusive,
+   ownership if relevant) and keep it consistent.
+2. For every loop, verify: first iteration, last iteration, empty input,
+   single element.
+3. When loop direction/order matters, state WHY it's correct before
+   writing it.
+4. After each function, trace one concrete 2–3 element example through it.
+5. Prefer the standard textbook formulation over a clever variant;
+   deviate only when required, and say so.
+6. Every computed indexed/dereferenced access is preceded by reasoning
+   for why it's valid (in bounds, non-null, initialized).
+7. Match every acquisition with its release, every open with its close;
+   in languages with manual memory or explicit errors, check every
+   fallible call.
+8. Use the language's idioms; name its task-relevant pitfalls before
+   writing (overflow, float comparison, half-open ranges, aliasing,
+   null vs undefined, truthiness).
+9. Include self-checking tests native to the language: assertions with
+   messages, a test main, or unit-test blocks.
+10. Re-read the task's explicit constraints (forbidden libs, required
+    APIs, output format) immediately before finalizing; confirm each.
+11. When an operation in a sequence fails, state what happens to the
+    cursor/iterator: stop, skip, or retry? A skipped failure must never
+    advance a committed position past it.
+"""
 `
 
 // TaskBucket identifies a classification bucket.
@@ -407,6 +482,15 @@ const (
 	BucketExploratoryCode TaskBucket = "exploratory_code"
 	BucketExplanation     TaskBucket = "explanation"
 	BucketArchitecture    TaskBucket = "architecture"
+	// BucketAgenticLoop is force-only: it has no classification keywords
+	// and is absent from the default priority_order, so Classify can
+	// never pick it on its own — it's activated exclusively through the
+	// forced-bucket control (dashboard keybinding / web panel), for
+	// long, iterative agent tasks (complex installs, many tool-call
+	// loops and retries) that message-content keywords can't reliably
+	// identify. Its preset keeps strict_code-grade precision sampling
+	// but with a much larger thinking budget.
+	BucketAgenticLoop TaskBucket = "agentic_loop"
 )
 
 // Preset holds the sampling/reasoning parameters injected for a bucket on
@@ -625,6 +709,16 @@ type Config struct {
 	ToolSchemaSanitizer ToolSchemaSanitizerConfig
 	ReasoningGuard      ReasoningGuardConfig
 	VisionDescribe      VisionDescribeConfig
+	// SystemPrompts holds every named [system_prompt.<name>] preset,
+	// keyed by name — an operator-chosen set of full system-prompt texts
+	// selectable live (see ProxyServer.SystemPromptOverride /
+	// injectSystemPrompt in proxy.go), e.g. from the web panel's dropdown.
+	// Loaded once here and never re-read per request, which matters for
+	// prefix-cache stability: the exact same text is prepended to the
+	// exact same client-supplied system message on every request using a
+	// given name, so llama-server's context/prefix cache (--cache-reuse)
+	// can actually reuse it instead of missing every time.
+	SystemPrompts map[string]string
 }
 
 // VisionDescribeConfig configures the describe-and-replace image
@@ -777,7 +871,7 @@ func LoadConfig(path string) (*Config, error) {
 		DefaultBucket: TaskBucket(strings.TrimSpace(cls.Key("default_bucket").MustString(string(BucketStrictCode)))),
 	}
 
-	for _, bucket := range []TaskBucket{BucketStrictCode, BucketExploratoryCode, BucketExplanation, BucketArchitecture} {
+	for _, bucket := range []TaskBucket{BucketStrictCode, BucketExploratoryCode, BucketExplanation, BucketArchitecture, BucketAgenticLoop} {
 		sec, err := f.GetSection("preset." + string(bucket))
 		if err != nil {
 			continue
@@ -845,6 +939,19 @@ func LoadConfig(path string) (*Config, error) {
 		Model:   vd.Key("model").MustString("stepfun/step-3.7-flash"),
 		BaseURL: strings.TrimSpace(vd.Key("base_url").String()),
 		APIKey:  strings.TrimSpace(vd.Key("api_key").String()),
+	}
+
+	// [system_prompt.*]: unlike buckets (a fixed enum), a prompt name is
+	// an arbitrary string the operator picks, so these sections are
+	// discovered by prefix rather than enumerated.
+	cfg.SystemPrompts = make(map[string]string)
+	for _, sec := range f.Sections() {
+		name := sec.Name()
+		if !strings.HasPrefix(name, "system_prompt.") {
+			continue
+		}
+		promptName := strings.TrimPrefix(name, "system_prompt.")
+		cfg.SystemPrompts[promptName] = strings.TrimSpace(sec.Key("text").String())
 	}
 
 	return cfg, nil

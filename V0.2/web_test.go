@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -51,24 +52,64 @@ func TestWebPanelStatus(t *testing.T) {
 }
 
 func TestWebPanelBucketToggle(t *testing.T) {
-	srv, sup, _ := newTestPanel(t)
+	srv, _, proxy := newTestPanel(t)
 	defer srv.Close()
 
-	resp, err := http.Post(srv.URL+"/api/bucket?bucket=strict_code", "", nil)
+	resp, err := http.Post(srv.URL+"/api/bucket?name=local&bucket=strict_code", "", nil)
 	if err != nil {
 		t.Fatalf("POST bucket: %v", err)
 	}
 	resp.Body.Close()
-	if b, ok := sup.CurrentForcedBucket(); !ok || b != BucketStrictCode {
+	if b, ok := proxy.CurrentForcedBucket(); !ok || b != BucketStrictCode {
 		t.Errorf("forced bucket = (%q,%v), want strict_code", b, ok)
 	}
 
 	// clear
-	resp, _ = http.Post(srv.URL+"/api/bucket?bucket=", "", nil)
+	resp, _ = http.Post(srv.URL+"/api/bucket?name=local&bucket=", "", nil)
 	resp.Body.Close()
-	if _, ok := sup.CurrentForcedBucket(); ok {
+	if _, ok := proxy.CurrentForcedBucket(); ok {
 		t.Error("bucket should be cleared")
 	}
+}
+
+// TestWebPanelBucketIsPerListener verifies the API-level guarantee behind
+// TestSupervisorForcedBucketIsPerListener: forcing a mode on one
+// listener's port must not affect another listener sharing the same
+// panel — the scenario that motivated making this per-listener at all
+// (multiple agents, each pointed at a different port).
+func TestWebPanelBucketIsPerListener(t *testing.T) {
+	cfg := testConfig()
+	p1, _ := NewProxyServer(cfg, nil, "local", nil, nil, "")
+	p2, _ := NewProxyServer(cfg, &ProviderConfig{BaseURL: "https://x.invalid"}, "claude", nil, nil, "")
+	sup := NewSupervisor()
+	sup.Register("local", "local", freePort(t), p1.Handler(), p1)
+	sup.Register("claude", "provider", freePort(t), p2.Handler(), p2)
+	broker := NewBroker()
+	panel := NewWebPanel(sup, broker, func() []ThroughputStatsEntry { return nil }, "https://api.cline.bot/api/v1")
+	srv := httptest.NewServer(panel.Handler())
+	defer srv.Close()
+
+	resp, err := http.Post(srv.URL+"/api/bucket?name=local&bucket=architecture", "", nil)
+	if err != nil {
+		t.Fatalf("POST bucket: %v", err)
+	}
+	resp.Body.Close()
+	if b, ok := p1.CurrentForcedBucket(); !ok || b != BucketArchitecture {
+		t.Error("local should have the forced bucket")
+	}
+	if _, ok := p2.CurrentForcedBucket(); ok {
+		t.Error("claude must be unaffected by local's forced bucket")
+	}
+
+	// An unknown listener name is rejected, not silently applied anywhere.
+	resp, err = http.Post(srv.URL+"/api/bucket?name=does-not-exist&bucket=architecture", "", nil)
+	if err != nil {
+		t.Fatalf("POST bucket: %v", err)
+	}
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400 for an unknown listener name", resp.StatusCode)
+	}
+	resp.Body.Close()
 }
 
 func TestWebPanelBypassToggle(t *testing.T) {
@@ -107,11 +148,12 @@ func TestWebPanelAlertToggle(t *testing.T) {
 	}
 }
 
-// TestWebPanelVisionToggle verifies the global vision-describe switch:
-// POST /api/vision flips every backend in lock-step, and /api/status
-// reports the current state for the panel's checkbox.
+// TestWebPanelVisionToggle verifies the per-listener vision-describe
+// switch: POST /api/vision?name=<listener> flips only that listener, and
+// /api/status's per-row field reports the current state for the panel's
+// checkbox.
 func TestWebPanelVisionToggle(t *testing.T) {
-	srv, sup, proxy := newTestPanel(t)
+	srv, _, proxy := newTestPanel(t)
 	defer srv.Close()
 
 	// testConfig has VisionDescribe zero-valued, so it starts disabled;
@@ -121,7 +163,7 @@ func TestWebPanelVisionToggle(t *testing.T) {
 		t.Fatal("vision describe should start disabled with a zero-value config")
 	}
 
-	resp, err := http.Post(srv.URL+"/api/vision?on=true", "", nil)
+	resp, err := http.Post(srv.URL+"/api/vision?name=local&on=true", "", nil)
 	if err != nil {
 		t.Fatalf("POST vision: %v", err)
 	}
@@ -129,30 +171,149 @@ func TestWebPanelVisionToggle(t *testing.T) {
 	if !proxy.VisionDescribeEnabled() {
 		t.Error("vision describe should be enabled after POST vision on=true")
 	}
-	if !sup.VisionDescribeEnabled() {
-		t.Error("supervisor should report vision describe enabled")
-	}
 
-	// Status must expose it for the panel checkbox.
+	// Status must expose it (per-listener) for the panel checkbox.
 	sresp, err := http.Get(srv.URL + "/api/status")
 	if err != nil {
 		t.Fatalf("GET status: %v", err)
 	}
 	var out struct {
-		VisionDescribe bool `json:"vision_describe"`
+		Listeners []ListenerStatus `json:"listeners"`
 	}
 	if err := json.NewDecoder(sresp.Body).Decode(&out); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
 	sresp.Body.Close()
-	if !out.VisionDescribe {
-		t.Error("status vision_describe = false, want true")
+	if len(out.Listeners) != 1 || !out.Listeners[0].VisionDescribe {
+		t.Errorf("status listeners = %+v, want local's vision_describe = true", out.Listeners)
 	}
 
-	resp, _ = http.Post(srv.URL+"/api/vision?on=false", "", nil)
+	resp, _ = http.Post(srv.URL+"/api/vision?name=local&on=false", "", nil)
 	resp.Body.Close()
 	if proxy.VisionDescribeEnabled() {
 		t.Error("vision describe should be disabled after POST vision on=false")
+	}
+}
+
+// TestWebPanelVisionIsPerListener verifies toggling one listener's
+// vision-describe never affects another — the per-listener guarantee
+// this feature exists for.
+func TestWebPanelVisionIsPerListener(t *testing.T) {
+	cfg := testConfig()
+	p1, _ := NewProxyServer(cfg, nil, "local", nil, nil, "")
+	p2, _ := NewProxyServer(cfg, &ProviderConfig{BaseURL: "https://x.invalid"}, "claude", nil, nil, "")
+	sup := NewSupervisor()
+	sup.Register("local", "local", freePort(t), p1.Handler(), p1)
+	sup.Register("claude", "provider", freePort(t), p2.Handler(), p2)
+	broker := NewBroker()
+	panel := NewWebPanel(sup, broker, func() []ThroughputStatsEntry { return nil }, "https://api.cline.bot/api/v1")
+	srv := httptest.NewServer(panel.Handler())
+	defer srv.Close()
+
+	resp, err := http.Post(srv.URL+"/api/vision?name=local&on=true", "", nil)
+	if err != nil {
+		t.Fatalf("POST vision: %v", err)
+	}
+	resp.Body.Close()
+	if !p1.VisionDescribeEnabled() {
+		t.Error("local should have vision describe enabled")
+	}
+	if p2.VisionDescribeEnabled() {
+		t.Error("claude must be unaffected by local's vision-describe toggle")
+	}
+}
+
+// TestWebPanelSystemPromptToggle verifies the per-listener system-prompt
+// selection: POST /api/system_prompt?name=<listener>&prompt=<name>
+// selects it only on that listener, /api/status exposes both the
+// per-listener selection and the global list of configured names for
+// the dropdown, and an empty prompt clears it.
+func TestWebPanelSystemPromptToggle(t *testing.T) {
+	cfg := testConfig()
+	cfg.SystemPrompts = map[string]string{"research": "You are a research assistant.", "code": "Be precise."}
+	proxy, err := NewProxyServer(cfg, nil, "local", nil, nil, "")
+	if err != nil {
+		t.Fatalf("NewProxyServer: %v", err)
+	}
+	sup := NewSupervisor()
+	sup.Register("local", "local", freePort(t), proxy.Handler(), proxy)
+	broker := NewBroker()
+	panel := NewWebPanel(sup, broker, func() []ThroughputStatsEntry { return nil }, "https://api.cline.bot/api/v1")
+	srv := httptest.NewServer(panel.Handler())
+	defer srv.Close()
+
+	if proxy.SystemPromptOverride() != "" {
+		t.Fatal("system prompt override should start empty")
+	}
+
+	resp, err := http.Post(srv.URL+"/api/system_prompt?name=local&prompt=research", "", nil)
+	if err != nil {
+		t.Fatalf("POST system_prompt: %v", err)
+	}
+	resp.Body.Close()
+	if proxy.SystemPromptOverride() != "research" {
+		t.Errorf("proxy SystemPromptOverride() = %q, want %q", proxy.SystemPromptOverride(), "research")
+	}
+
+	sresp, err := http.Get(srv.URL + "/api/status")
+	if err != nil {
+		t.Fatalf("GET status: %v", err)
+	}
+	var out struct {
+		Listeners     []ListenerStatus `json:"listeners"`
+		SystemPrompts []string         `json:"system_prompts"`
+	}
+	if err := json.NewDecoder(sresp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	sresp.Body.Close()
+	if len(out.Listeners) != 1 || out.Listeners[0].SystemPrompt != "research" {
+		t.Errorf("status listeners = %+v, want local's system_prompt = research", out.Listeners)
+	}
+	wantNames := []string{"code", "research"} // sorted, per SystemPromptNames
+	if !reflect.DeepEqual(out.SystemPrompts, wantNames) {
+		t.Errorf("status system_prompts = %v, want %v", out.SystemPrompts, wantNames)
+	}
+
+	resp, _ = http.Post(srv.URL+"/api/system_prompt?name=local&prompt=", "", nil)
+	resp.Body.Close()
+	if proxy.SystemPromptOverride() != "" {
+		t.Error("system prompt override should be cleared by an empty prompt")
+	}
+}
+
+// TestWebPanelSystemPromptIsPerListener verifies selecting a prompt on
+// one listener never affects another — the exact scenario this whole
+// per-listener conversion exists for: two different agents, two
+// different ports, two different dedicated prompts.
+func TestWebPanelSystemPromptIsPerListener(t *testing.T) {
+	cfg := testConfig()
+	cfg.SystemPrompts = map[string]string{"research": "You are a research assistant.", "code": "Be precise."}
+	p1, _ := NewProxyServer(cfg, nil, "local", nil, nil, "")
+	p2, _ := NewProxyServer(cfg, &ProviderConfig{BaseURL: "https://x.invalid"}, "claude", nil, nil, "")
+	sup := NewSupervisor()
+	sup.Register("local", "local", freePort(t), p1.Handler(), p1)
+	sup.Register("claude", "provider", freePort(t), p2.Handler(), p2)
+	broker := NewBroker()
+	panel := NewWebPanel(sup, broker, func() []ThroughputStatsEntry { return nil }, "https://api.cline.bot/api/v1")
+	srv := httptest.NewServer(panel.Handler())
+	defer srv.Close()
+
+	post := func(name, prompt string) {
+		resp, err := http.Post(srv.URL+"/api/system_prompt?name="+name+"&prompt="+prompt, "", nil)
+		if err != nil {
+			t.Fatalf("POST system_prompt: %v", err)
+		}
+		resp.Body.Close()
+	}
+	post("local", "research")
+	post("claude", "code")
+
+	if p1.SystemPromptOverride() != "research" {
+		t.Errorf("local SystemPromptOverride() = %q, want %q", p1.SystemPromptOverride(), "research")
+	}
+	if p2.SystemPromptOverride() != "code" {
+		t.Errorf("claude SystemPromptOverride() = %q, want %q", p2.SystemPromptOverride(), "code")
 	}
 }
 

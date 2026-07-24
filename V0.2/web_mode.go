@@ -84,6 +84,16 @@ func runWebMode(cfg *Config, exePath string, webPort int, alertEnabled bool) {
 		}
 	}
 
+	// Restore per-listener switches (bypass, alert, model, forced bucket,
+	// vision describe, system prompt, running) from the last time this
+	// process ran, so a restart doesn't silently reset every agent's
+	// controls back to config.ini's defaults. Must run after every
+	// mkBackend/Register call above — a listener registered later would
+	// never receive its saved state — and before the default auto-start
+	// below, which is the fallback for names with no saved entry yet
+	// (first run, or a newly-added backend).
+	sup.EnablePersistence(filepath.Join(dir, "listener_state.json"))
+
 	// Auto-start a sensible initial set: the local backend, plus forward-proxy
 	// if it was enabled in config. Everything else starts stopped and is
 	// toggled from the panel.
@@ -137,9 +147,18 @@ func runWebMode(cfg *Config, exePath string, webPort int, alertEnabled bool) {
 	if stdinIsTerminal() {
 		// Interactive terminal: run the TUI alongside the web panel, fed via
 		// broker subscriptions so it and the browser don't starve each other.
+		// This TUI is a mirror of ALL backends combined (it has no single
+		// listener of its own to target), so its keybinding scopes to
+		// "local" specifically — the traditional default backend — rather
+		// than every listener at once: forced bucket is per-listener now
+		// (see Supervisor.SetForcedBucket), and silently reapplying it to
+		// every agent sharing this process is exactly the cross-agent leak
+		// that made it per-listener in the first place. Any other
+		// listener's classification mode is controlled from the web panel
+		// itself, which has a per-row control.
 		controls := DashboardControls{
-			SetForcedBucket:   func(b TaskBucket) { sup.SetForcedBucketAll(b) },
-			ClearForcedBucket: func() { sup.ClearForcedBucketAll() },
+			SetForcedBucket:   func(b TaskBucket) { sup.SetForcedBucket("local", b) },
+			ClearForcedBucket: func() { sup.SetForcedBucket("local", "") },
 		}
 		uiCh, cancelUI := broker.SubscribeUI()
 		defer cancelUI()

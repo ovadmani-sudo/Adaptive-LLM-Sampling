@@ -12,6 +12,7 @@ func TestProviderAPIKeyEnvVarNaming(t *testing.T) {
 		ProviderGemini:     "GEMINI_API_KEY",
 		ProviderOpenAI:     "OPENAI_API_KEY",
 		ProviderOpenRouter: "OPENROUTER_API_KEY",
+		ProviderClinepass:  "CLINEPASS_API_KEY",
 	}
 	for name, want := range cases {
 		if got := providerAPIKeyEnvVar(name); got != want {
@@ -87,6 +88,7 @@ func TestDefaultProviderListenPortsAreSequentialFrom9092(t *testing.T) {
 		ProviderGemini:     9093,
 		ProviderOpenAI:     9094,
 		ProviderOpenRouter: 9095,
+		ProviderClinepass:  9096,
 	}
 	for name, port := range want {
 		if got := defaultProviderListenPort(name); got != port {
@@ -214,118 +216,6 @@ repetition_requires_length_finish = false
 	}
 }
 
-// TestLoadConfigParsesAgenticLoopPreset verifies the force-only
-// agentic_loop bucket's preset parses from [preset.agentic_loop] the same
-// way every other bucket's does.
-func TestLoadConfigParsesAgenticLoopPreset(t *testing.T) {
-	path := writeTestConfig(t, `[preset.agentic_loop]
-temperature = 0.2
-top_p = 0.9
-top_k = 40
-thinking_budget_tokens = 8192
-`)
-
-	cfg, err := LoadConfig(path)
-	if err != nil {
-		t.Fatalf("LoadConfig: %v", err)
-	}
-
-	preset, ok := cfg.Presets[BucketAgenticLoop]
-	if !ok {
-		t.Fatal("expected a preset for BucketAgenticLoop")
-	}
-	if preset.ThinkingBudgetTokens == nil || *preset.ThinkingBudgetTokens != 8192 {
-		t.Errorf("ThinkingBudgetTokens = %v, want 8192", preset.ThinkingBudgetTokens)
-	}
-	if preset.Temperature == nil || *preset.Temperature != 0.2 {
-		t.Errorf("Temperature = %v, want 0.2", preset.Temperature)
-	}
-}
-
-// TestAgenticLoopNeverAutoClassifies verifies the force-only guarantee:
-// with the real default [classification] config (no agentic_loop
-// keywords, not in priority_order), Classify can never return it on its
-// own, however the message is worded.
-func TestAgenticLoopNeverAutoClassifies(t *testing.T) {
-	cfg := ClassificationConfig{
-		Keywords: map[TaskBucket][]string{
-			BucketStrictCode: {"fix", "install", "loop"},
-		},
-		PriorityOrder: []TaskBucket{BucketStrictCode, BucketExploratoryCode, BucketExplanation, BucketArchitecture},
-		DefaultBucket: BucketStrictCode,
-	}
-	messages := []string{
-		"please fix the install loop",
-		"agentic loop task with lots of retries",
-		"",
-	}
-	for _, msg := range messages {
-		if got := Classify(&cfg, msg); got == BucketAgenticLoop {
-			t.Errorf("Classify(%q) = %q, agentic_loop must never auto-trigger", msg, got)
-		}
-	}
-}
-
-// TestLoadConfigParsesSystemPromptSections verifies [system_prompt.*]
-// sections are discovered by prefix (an arbitrary operator-chosen name,
-// unlike the fixed bucket enum), the multi-line triple-quoted "text"
-// value parses correctly including blank lines and "##" headers, and
-// leading/trailing whitespace is trimmed.
-func TestLoadConfigParsesSystemPromptSections(t *testing.T) {
-	path := writeTestConfig(t, `[system_prompt.research]
-text = """
-
-You are a research assistant.
-
-## Rules
-Be thorough.
-
-"""
-
-[system_prompt.code]
-text = """
-Be precise.
-"""
-`)
-
-	cfg, err := LoadConfig(path)
-	if err != nil {
-		t.Fatalf("LoadConfig: %v", err)
-	}
-
-	if len(cfg.SystemPrompts) != 2 {
-		t.Fatalf("expected 2 system prompts, got %d: %+v", len(cfg.SystemPrompts), cfg.SystemPrompts)
-	}
-	research, ok := cfg.SystemPrompts["research"]
-	if !ok {
-		t.Fatal("expected a \"research\" system prompt")
-	}
-	if want := "You are a research assistant.\n\n## Rules\nBe thorough."; research != want {
-		t.Errorf("research prompt = %q, want %q", research, want)
-	}
-	if code := cfg.SystemPrompts["code"]; code != "Be precise." {
-		t.Errorf("code prompt = %q, want %q", code, "Be precise.")
-	}
-}
-
-// TestLoadConfigNoSystemPromptsWhenNoneConfigured verifies the absence of
-// any [system_prompt.*] section leaves the map empty (not nil-panicking
-// on lookup), matching every other config's "no section = disabled" rule.
-func TestLoadConfigNoSystemPromptsWhenNoneConfigured(t *testing.T) {
-	path := writeTestConfig(t, minimalProviderConfig)
-
-	cfg, err := LoadConfig(path)
-	if err != nil {
-		t.Fatalf("LoadConfig: %v", err)
-	}
-	if len(cfg.SystemPrompts) != 0 {
-		t.Errorf("expected no system prompts, got %+v", cfg.SystemPrompts)
-	}
-	if _, ok := cfg.SystemPrompts["anything"]; ok {
-		t.Error("lookup on an absent name should report ok=false, not panic or find something")
-	}
-}
-
 func TestLoadConfigTokensSecMultiplierOverride(t *testing.T) {
 	path := writeTestConfig(t, `[provider.openrouter]
 base_url = https://openrouter.ai/api/v1
@@ -339,5 +229,48 @@ tokens_sec_multiplier = 2.5
 
 	if got := cfg.Providers[ProviderOpenRouter].TokensSecMultiplier; got != 2.5 {
 		t.Errorf("TokensSecMultiplier = %v, want explicit override 2.5", got)
+	}
+}
+
+// TestLoadConfigClinepassProviderResolvesFromIniAndEnv covers the
+// clinepass provider end-to-end: it's Cline's own hosted gateway
+// (api.cline.bot), not a model vendor's API directly, so its base_url
+// looks nothing like the other four — worth a dedicated check that it
+// parses correctly and that its env var key follows the same
+// {NAME}_API_KEY convention as every other provider (CLINEPASS_API_KEY,
+// not something bespoke).
+func TestLoadConfigClinepassProviderResolvesFromIniAndEnv(t *testing.T) {
+	path := writeTestConfig(t, `[provider.clinepass]
+base_url = https://api.cline.bot/api/v1
+`)
+
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+
+	pc := cfg.Providers[ProviderClinepass]
+	if pc.BaseURL != "https://api.cline.bot/api/v1" {
+		t.Errorf("clinepass BaseURL = %q, want https://api.cline.bot/api/v1", pc.BaseURL)
+	}
+	if pc.ListenPort != 9096 {
+		t.Errorf("clinepass ListenPort = %d, want default 9096", pc.ListenPort)
+	}
+}
+
+func TestLoadConfigClinepassEnvVarOverridesIniAPIKey(t *testing.T) {
+	path := writeTestConfig(t, `[provider.clinepass]
+base_url = https://api.cline.bot/api/v1
+api_key = ini-key-value
+`)
+	t.Setenv("CLINEPASS_API_KEY", "env-key-value")
+
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+
+	if got := cfg.Providers[ProviderClinepass].APIKey; got != "env-key-value" {
+		t.Errorf("APIKey = %q, want env-key-value (CLINEPASS_API_KEY must win over config.ini)", got)
 	}
 }

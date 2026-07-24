@@ -132,6 +132,53 @@ func newFixtureProxy(t *testing.T, cfg *Config, handler http.HandlerFunc) (*Prox
 	return proxy, events, upstream.Close
 }
 
+// TestEmitStampsListenerName verifies every UIEvent/ProgressEvent this
+// instance emits carries its listener identity — the same name it was
+// registered under in the Supervisor — so the web panel's in-flight
+// session selector can attribute each tick to the right backend when
+// several listeners are running (and being used by different agents) at
+// once.
+func TestEmitStampsListenerName(t *testing.T) {
+	cfg := testConfig()
+	events := make(chan UIEvent, 1)
+	progressCh := make(chan ProgressEvent, 1)
+	proxy, err := NewProxyServer(cfg, nil, "claude", events, progressCh, "")
+	if err != nil {
+		t.Fatalf("NewProxyServer: %v", err)
+	}
+
+	proxy.emit(UIEvent{Bucket: BucketStrictCode})
+	if ev := <-events; ev.Listener != "claude" {
+		t.Errorf("emit: Listener = %q, want %q", ev.Listener, "claude")
+	}
+
+	proxy.emitProgress(ProgressEvent{Bucket: BucketStrictCode})
+	if ev := <-progressCh; ev.Listener != "claude" {
+		t.Errorf("emitProgress: Listener = %q, want %q", ev.Listener, "claude")
+	}
+}
+
+// TestEmitListenerNameSurvivesSwitchProvider confirms Listener is the
+// listener's fixed registration identity, distinct from the mutable
+// providerLabel SwitchProvider can change live — a listener's identity in
+// the web panel must not shift just because its outbound target did.
+func TestEmitListenerNameSurvivesSwitchProvider(t *testing.T) {
+	cfg := testConfig()
+	events := make(chan UIEvent, 1)
+	proxy, err := NewProxyServer(cfg, &ProviderConfig{BaseURL: "https://a.invalid"}, "codex", events, nil, "")
+	if err != nil {
+		t.Fatalf("NewProxyServer: %v", err)
+	}
+	if err := proxy.SwitchProvider("openrouter", ProviderConfig{BaseURL: "https://b.invalid"}); err != nil {
+		t.Fatalf("SwitchProvider: %v", err)
+	}
+
+	proxy.emit(UIEvent{})
+	if ev := <-events; ev.Listener != "codex" {
+		t.Errorf("Listener = %q, want %q (fixed listener identity, not the switched provider label)", ev.Listener, "codex")
+	}
+}
+
 func postChat(proxy *ProxyServer, body map[string]interface{}) *httptest.ResponseRecorder {
 	reqBody, _ := json.Marshal(body)
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(string(reqBody)))
@@ -1512,6 +1559,181 @@ func TestSystemPromptHashStableAndSensitive(t *testing.T) {
 	}
 }
 
+// TestInjectSystemPromptPrependsToExistingSystemMessage verifies the
+// common case: a client-supplied system message survives underneath the
+// injected text rather than being replaced — an agent tool's own
+// tool-definition system prompt must not be lost.
+func TestInjectSystemPromptPrependsToExistingSystemMessage(t *testing.T) {
+	body := map[string]interface{}{
+		"messages": []interface{}{
+			map[string]interface{}{"role": "system", "content": "client's own system prompt"},
+			map[string]interface{}{"role": "user", "content": "hi"},
+		},
+	}
+	injectSystemPrompt(body, "INJECTED TEXT")
+
+	messages := body["messages"].([]interface{})
+	sysMsg := messages[0].(map[string]interface{})
+	want := "INJECTED TEXT\n\nclient's own system prompt"
+	if sysMsg["content"] != want {
+		t.Errorf("system message content = %q, want %q", sysMsg["content"], want)
+	}
+	if len(messages) != 2 {
+		t.Fatalf("expected message count unchanged (2), got %d", len(messages))
+	}
+	userMsg := messages[1].(map[string]interface{})
+	if userMsg["content"] != "hi" {
+		t.Errorf("user message must be untouched, got %q", userMsg["content"])
+	}
+}
+
+// TestInjectSystemPromptInsertsWhenNoneExists verifies a client that sent
+// no system message at all gets one inserted at the very start.
+func TestInjectSystemPromptInsertsWhenNoneExists(t *testing.T) {
+	body := map[string]interface{}{
+		"messages": []interface{}{
+			map[string]interface{}{"role": "user", "content": "hi"},
+		},
+	}
+	injectSystemPrompt(body, "INJECTED TEXT")
+
+	messages := body["messages"].([]interface{})
+	if len(messages) != 2 {
+		t.Fatalf("expected a new system message inserted (2 total), got %d: %+v", len(messages), messages)
+	}
+	first := messages[0].(map[string]interface{})
+	if first["role"] != "system" || first["content"] != "INJECTED TEXT" {
+		t.Errorf("expected new system message {role:system, content:INJECTED TEXT} at index 0, got %+v", first)
+	}
+	second := messages[1].(map[string]interface{})
+	if second["content"] != "hi" {
+		t.Errorf("original user message must still be present, got %+v", second)
+	}
+}
+
+// TestInjectSystemPromptDeterministicAcrossCalls is the direct regression
+// test for the cache-stability requirement this feature exists to
+// satisfy: the SAME override text prepended to the SAME original client
+// content must produce byte-identical output every time, with no
+// timestamps or nondeterminism, so llama-server's prefix cache can
+// actually reuse it across requests.
+func TestInjectSystemPromptDeterministicAcrossCalls(t *testing.T) {
+	newBody := func() map[string]interface{} {
+		return map[string]interface{}{
+			"messages": []interface{}{
+				map[string]interface{}{"role": "system", "content": "client prompt"},
+				map[string]interface{}{"role": "user", "content": "hi"},
+			},
+		}
+	}
+
+	bodyA := newBody()
+	bodyB := newBody()
+	injectSystemPrompt(bodyA, "SAME OVERRIDE")
+	injectSystemPrompt(bodyB, "SAME OVERRIDE")
+
+	contentA := bodyA["messages"].([]interface{})[0].(map[string]interface{})["content"]
+	contentB := bodyB["messages"].([]interface{})[0].(map[string]interface{})["content"]
+	if contentA != contentB {
+		t.Errorf("expected byte-identical injected system content across calls, got %q vs %q", contentA, contentB)
+	}
+}
+
+// TestInjectSystemPromptMergesIntoArrayContentSystemMessage is the
+// regression test for a real production failure (OpenHands + a selected
+// system prompt): OpenHands sends its system message content as an
+// array-of-parts, not a plain string. The previous version of this
+// function skipped merging into that shape and inserted a SECOND system
+// message instead — confirmed directly against llama-server that this
+// makes its jinja chat template reject the whole request ("System
+// message must be at the beginning"), since it hard-requires exactly one
+// system message. This verifies the fix: the prompt is merged in as a
+// new leading text part of the SAME message, so there is still only one.
+func TestInjectSystemPromptMergesIntoArrayContentSystemMessage(t *testing.T) {
+	body := map[string]interface{}{
+		"messages": []interface{}{
+			map[string]interface{}{"role": "system", "content": []interface{}{
+				map[string]interface{}{"type": "text", "text": "client's own part"},
+			}},
+			map[string]interface{}{"role": "user", "content": "hi"},
+		},
+	}
+	injectSystemPrompt(body, "INJECTED TEXT")
+
+	messages := body["messages"].([]interface{})
+	if len(messages) != 2 {
+		t.Fatalf("expected message count unchanged (2) — no second system message, got %d: %+v", len(messages), messages)
+	}
+	sysMsg := messages[0].(map[string]interface{})
+	parts, ok := sysMsg["content"].([]interface{})
+	if !ok || len(parts) != 2 {
+		t.Fatalf("expected 2 content parts (injected + original), got %+v", sysMsg["content"])
+	}
+	first := parts[0].(map[string]interface{})
+	if first["type"] != "text" || first["text"] != "INJECTED TEXT" {
+		t.Errorf("expected the injected text as the new leading part, got %+v", first)
+	}
+	second := parts[1].(map[string]interface{})
+	if second["text"] != "client's own part" {
+		t.Errorf("expected the client's own part preserved after it, got %+v", second)
+	}
+}
+
+// TestInjectSystemPromptMovesMisplacedSystemMessageToFront is the other
+// half of the same regression: llama-server's jinja template also
+// rejects a request whose (single, correctly merged) system message
+// isn't the very first message — confirmed directly against the server.
+// A client that puts its system message anywhere else must have it
+// moved to index 0, not just merged in place.
+func TestInjectSystemPromptMovesMisplacedSystemMessageToFront(t *testing.T) {
+	body := map[string]interface{}{
+		"messages": []interface{}{
+			map[string]interface{}{"role": "user", "content": "hi"},
+			map[string]interface{}{"role": "system", "content": "client's own system prompt"},
+		},
+	}
+	injectSystemPrompt(body, "INJECTED TEXT")
+
+	messages := body["messages"].([]interface{})
+	if len(messages) != 2 {
+		t.Fatalf("expected message count unchanged (2), got %d: %+v", len(messages), messages)
+	}
+	first := messages[0].(map[string]interface{})
+	if first["role"] != "system" {
+		t.Fatalf("expected the system message moved to index 0, got %+v at index 0", first)
+	}
+	want := "INJECTED TEXT\n\nclient's own system prompt"
+	if first["content"] != want {
+		t.Errorf("content = %q, want %q", first["content"], want)
+	}
+	second := messages[1].(map[string]interface{})
+	if second["role"] != "user" || second["content"] != "hi" {
+		t.Errorf("expected the user message to remain, now at index 1, got %+v", second)
+	}
+}
+
+// TestInjectSystemPromptNoopOnEmptyPromptOrMissingMessages verifies the
+// guard clauses: an empty promptText is a no-op, and a body with no
+// "messages" field at all (kindCompletion's shape) is left alone rather
+// than panicking.
+func TestInjectSystemPromptNoopOnEmptyPromptOrMissingMessages(t *testing.T) {
+	body := map[string]interface{}{
+		"messages": []interface{}{
+			map[string]interface{}{"role": "user", "content": "hi"},
+		},
+	}
+	injectSystemPrompt(body, "")
+	if len(body["messages"].([]interface{})) != 1 {
+		t.Error("empty promptText must be a no-op")
+	}
+
+	noMessages := map[string]interface{}{"prompt": "some completion prompt"}
+	injectSystemPrompt(noMessages, "INJECTED TEXT") // must not panic
+	if _, ok := noMessages["messages"]; ok {
+		t.Error("a body with no messages field must not gain one")
+	}
+}
+
 // TestSwitchProviderRedirectsToNewBackend verifies a request made after
 // SwitchProvider goes to the NEW backend with the new API key and model
 // override, not the one this instance was originally constructed with —
@@ -1659,6 +1881,144 @@ func TestForcedBucketOverridesClassification(t *testing.T) {
 	})
 	if sawTemp != 0.2 {
 		t.Errorf("temperature = %v, want 0.2 (strict_code preset, from testConfig) — ClearForcedBucket did not return to auto-detect", sawTemp)
+	}
+}
+
+// TestForcedAgenticLoopBucketInjectsBoostedThinkingBudget verifies the
+// actual use case: forcing agentic_loop on a message that would normally
+// classify as strict_code (same keywords apply — the two buckets are
+// deliberately indistinguishable by content) injects the much larger
+// thinking_budget_tokens instead of strict_code's default.
+func TestForcedAgenticLoopBucketInjectsBoostedThinkingBudget(t *testing.T) {
+	var sawBudget int
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var reqBody map[string]interface{}
+		json.NewDecoder(r.Body).Decode(&reqBody)
+		sawBudget = getInt(reqBody, "thinking_budget_tokens", -1)
+		w.Write(chatResponse("ok", "stop"))
+	}))
+	defer upstream.Close()
+
+	cfg := testConfig()
+	budget := 8192
+	cfg.Presets[BucketAgenticLoop] = Preset{ThinkingBudgetTokens: &budget}
+	u, _ := url.Parse(upstream.URL)
+	host, portStr, _ := strings.Cut(u.Host, ":")
+	port, _ := strconv.Atoi(portStr)
+	cfg.Server.UpstreamHost = host
+	cfg.Server.UpstreamPort = port
+
+	proxy, err := NewProxyServer(cfg, nil, "local", make(chan UIEvent, 8), nil, "")
+	if err != nil {
+		t.Fatalf("NewProxyServer: %v", err)
+	}
+
+	proxy.SetForcedBucket(BucketAgenticLoop)
+	postChat(proxy, map[string]interface{}{
+		// Matches testConfig's strict_code keyword ("fix bug") — forcing
+		// agentic_loop must win over that classification anyway.
+		"messages": []interface{}{map[string]interface{}{"role": "user", "content": "please fix bug"}},
+	})
+	if sawBudget != 8192 {
+		t.Errorf("thinking_budget_tokens = %d, want 8192 (agentic_loop preset), forced bucket was not applied", sawBudget)
+	}
+}
+
+// TestSystemPromptOverrideEndToEnd verifies SetSystemPromptOverride
+// actually reaches the upstream request: the selected [system_prompt.*]
+// text is prepended to the client's own system message, and clearing the
+// override (empty name) goes back to forwarding the client's system
+// message untouched.
+func TestSystemPromptOverrideEndToEnd(t *testing.T) {
+	var sawSystemContent string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var reqBody map[string]interface{}
+		json.NewDecoder(r.Body).Decode(&reqBody)
+		for _, m := range reqBody["messages"].([]interface{}) {
+			msg := m.(map[string]interface{})
+			if msg["role"] == "system" {
+				sawSystemContent, _ = msg["content"].(string)
+			}
+		}
+		w.Write(chatResponse("ok", "stop"))
+	}))
+	defer upstream.Close()
+
+	cfg := testConfig()
+	cfg.SystemPrompts = map[string]string{"research": "You are a research assistant."}
+	u, _ := url.Parse(upstream.URL)
+	host, portStr, _ := strings.Cut(u.Host, ":")
+	port, _ := strconv.Atoi(portStr)
+	cfg.Server.UpstreamHost = host
+	cfg.Server.UpstreamPort = port
+
+	proxy, err := NewProxyServer(cfg, nil, "local", make(chan UIEvent, 8), nil, "")
+	if err != nil {
+		t.Fatalf("NewProxyServer: %v", err)
+	}
+
+	req := map[string]interface{}{
+		"messages": []interface{}{
+			map[string]interface{}{"role": "system", "content": "client's own system prompt"},
+			map[string]interface{}{"role": "user", "content": "please fix bug"},
+		},
+	}
+
+	proxy.SetSystemPromptOverride("research")
+	postChat(proxy, req)
+	want := "You are a research assistant.\n\nclient's own system prompt"
+	if sawSystemContent != want {
+		t.Errorf("system content = %q, want %q", sawSystemContent, want)
+	}
+
+	proxy.SetSystemPromptOverride("")
+	postChat(proxy, req)
+	if sawSystemContent != "client's own system prompt" {
+		t.Errorf("system content = %q, want the client's own untouched %q after clearing the override", sawSystemContent, "client's own system prompt")
+	}
+}
+
+// TestSystemPromptOverrideUnknownNameIsNoop verifies selecting a name not
+// present in Config.SystemPrompts (e.g. a stale UI, or config.ini edited
+// without a restart) silently leaves the request untouched rather than
+// erroring the request.
+func TestSystemPromptOverrideUnknownNameIsNoop(t *testing.T) {
+	var sawSystemContent string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var reqBody map[string]interface{}
+		json.NewDecoder(r.Body).Decode(&reqBody)
+		for _, m := range reqBody["messages"].([]interface{}) {
+			msg := m.(map[string]interface{})
+			if msg["role"] == "system" {
+				sawSystemContent, _ = msg["content"].(string)
+			}
+		}
+		w.Write(chatResponse("ok", "stop"))
+	}))
+	defer upstream.Close()
+
+	cfg := testConfig()
+	cfg.SystemPrompts = map[string]string{"research": "You are a research assistant."}
+	u, _ := url.Parse(upstream.URL)
+	host, portStr, _ := strings.Cut(u.Host, ":")
+	port, _ := strconv.Atoi(portStr)
+	cfg.Server.UpstreamHost = host
+	cfg.Server.UpstreamPort = port
+
+	proxy, err := NewProxyServer(cfg, nil, "local", make(chan UIEvent, 8), nil, "")
+	if err != nil {
+		t.Fatalf("NewProxyServer: %v", err)
+	}
+
+	proxy.SetSystemPromptOverride("does-not-exist")
+	postChat(proxy, map[string]interface{}{
+		"messages": []interface{}{
+			map[string]interface{}{"role": "system", "content": "client's own system prompt"},
+			map[string]interface{}{"role": "user", "content": "please fix bug"},
+		},
+	})
+	if sawSystemContent != "client's own system prompt" {
+		t.Errorf("system content = %q, want the client's own untouched %q for an unknown override name", sawSystemContent, "client's own system prompt")
 	}
 }
 

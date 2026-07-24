@@ -216,6 +216,7 @@ func TestDashboardForceBucketKeybindings(t *testing.T) {
 		{'2', BucketExploratoryCode},
 		{'3', BucketExplanation},
 		{'4', BucketArchitecture},
+		{'5', BucketAgenticLoop},
 	}
 	for _, c := range cases {
 		updated, _ := m.Update(keyRune(c.key))

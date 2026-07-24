@@ -3,25 +3,25 @@
     "provider": "clinepass",
     "model": "stepfun/step-3.7-flash",
     "bucket": "strict_code",
-    "samples": 307,
-    "sum_prompt_tokens": 3902567,
-    "sum_completion_tokens": 347449,
-    "sum_latency_ms": 2465562,
+    "samples": 308,
+    "sum_prompt_tokens": 3911411,
+    "sum_completion_tokens": 356710,
+    "sum_latency_ms": 2486215,
     "min_tokens_per_second": 9.688581314878892,
     "max_tokens_per_second": 48321.42857142857,
-    "last_updated": "2026-07-19T18:55:07.973029997+03:00"
+    "last_updated": "2026-07-23T07:59:47.327726887+03:00"
   },
   {
     "provider": "clinepass",
     "model": "deepseek/deepseek-v4-flash",
     "bucket": "strict_code",
-    "samples": 100,
-    "sum_prompt_tokens": 3337531,
-    "sum_completion_tokens": 100613,
-    "sum_latency_ms": 502764,
-    "min_tokens_per_second": 22.865236746256574,
+    "samples": 235,
+    "sum_prompt_tokens": 10973290,
+    "sum_completion_tokens": 166104,
+    "sum_latency_ms": 1179509,
+    "min_tokens_per_second": 5.048407195577851,
     "max_tokens_per_second": 16500,
-    "last_updated": "2026-07-20T19:13:52.374430842+03:00"
+    "last_updated": "2026-07-24T21:56:50.585187768+03:00"
   },
   {
     "provider": "clinepass",
@@ -75,13 +75,13 @@
     "provider": "clinepass",
     "model": "cline-pass/deepseek-v4-flash",
     "bucket": "strict_code",
-    "samples": 36,
-    "sum_prompt_tokens": 113294,
-    "sum_completion_tokens": 5222,
-    "sum_latency_ms": 93135,
-    "min_tokens_per_second": 15.393226980128743,
-    "max_tokens_per_second": 559.3220338983051,
-    "last_updated": "2026-07-21T19:30:32.579002488+03:00"
+    "samples": 199,
+    "sum_prompt_tokens": 7842483,
+    "sum_completion_tokens": 131727,
+    "sum_latency_ms": 493505,
+    "min_tokens_per_second": 6.3754970587268724,
+    "max_tokens_per_second": 223289.47368421053,
+    "last_updated": "2026-07-24T17:51:44.586642745+03:00"
   },
   {
     "provider": "clinepass",
@@ -94,5 +94,29 @@
     "min_tokens_per_second": 71.3489409141583,
     "max_tokens_per_second": 71.3489409141583,
     "last_updated": "2026-07-18T15:51:15.915641264+03:00"
+  },
+  {
+    "provider": "clinepass",
+    "model": "cline-pass/glm-5.2",
+    "bucket": "strict_code",
+    "samples": 31,
+    "sum_prompt_tokens": 5349925,
+    "sum_completion_tokens": 7490,
+    "sum_latency_ms": 49727,
+    "min_tokens_per_second": 63.18082788671024,
+    "max_tokens_per_second": 2089.4039735099336,
+    "last_updated": "2026-07-22T21:56:47.70709011+03:00"
+  },
+  {
+    "provider": "clinepass",
+    "model": "poolside/laguna-s-2.1:free",
+    "bucket": "strict_code",
+    "samples": 2,
+    "sum_prompt_tokens": 763,
+    "sum_completion_tokens": 4313,
+    "sum_latency_ms": 94909,
+    "min_tokens_per_second": 42.98082869511441,
+    "max_tokens_per_second": 51.639192443045005,
+    "last_updated": "2026-07-23T08:12:26.884930275+03:00"
   }
 ]

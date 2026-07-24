@@ -14,6 +14,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -54,6 +55,17 @@ type ProxyServer struct {
 	upstreamBase  string
 	passthrough   *httputil.ReverseProxy
 
+	// listenerName is this instance's fixed identity — the same name it
+	// was registered under in the Supervisor (see web_mode.go's
+	// mkBackend) — stamped onto every UIEvent/ProgressEvent so the web
+	// panel can attribute activity to a specific listener/session (the
+	// "In-flight" card's session selector). Deliberately a separate,
+	// immutable field from providerLabel: providerLabel can change live
+	// via SwitchProvider (a single-provider agent redirected to a
+	// different real backend), but which *listener* a request came in on
+	// never does.
+	listenerName string
+
 	// forcedBucketMu guards forcedBucket — set via the dashboard to pin a
 	// classification bucket for every request, bypassing Classify()
 	// entirely, when auto-detection doesn't pick the right one. nil means
@@ -86,12 +98,21 @@ type ProxyServer struct {
 	alertEnabled atomic.Bool
 
 	// visionDescribeEnabled gates [vision_describe] (vision_describe.go).
-	// Seeded from cfg.VisionDescribe.Enabled, then a live toggle from the
-	// control panel — GLOBAL in spirit (the supervisor flips every
-	// instance in lock-step, see SetVisionDescribeAll), per-instance
-	// atomic in mechanics for the same lock-free read the other toggles
-	// use on the request path.
+	// Seeded from cfg.VisionDescribe.Enabled, then a live, per-listener
+	// toggle from the control panel (see Supervisor.SetVisionDescribe) —
+	// independent per instance, so one agent's vision handling never
+	// affects another sharing this process. Atomic for the same
+	// lock-free read the other toggles use on the request path.
 	visionDescribeEnabled atomic.Bool
+
+	// systemPromptOverride, when non-empty, names a [system_prompt.*]
+	// entry (see Config.SystemPrompts) whose text is prepended to every
+	// outgoing chat request — a live, per-listener choice from the web
+	// panel's dropdown (see Supervisor.SetSystemPrompt). Guarded by
+	// systemPromptMu, same pattern as modelOverride, since a plain string
+	// has no atomic type.
+	systemPromptMu       sync.RWMutex
+	systemPromptOverride string
 
 	retryLogMu   sync.Mutex
 	retryLogFile *os.File
@@ -151,6 +172,7 @@ func NewProxyServer(cfg *Config, provider *ProviderConfig, providerLabel string,
 		cfg:           cfg,
 		provider:      provider,
 		providerLabel: providerLabel,
+		listenerName:  providerLabel,
 		// Proxy explicitly nil, overriding http.DefaultTransport's
 		// Proxy: ProxyFromEnvironment — this client's whole job is BEING
 		// the proxy for HTTP_PROXY/HTTPS_PROXY-configured tools (forward-
@@ -336,6 +358,35 @@ func (p *ProxyServer) AlertEnabled() bool      { return p.alertEnabled.Load() }
 func (p *ProxyServer) SetVisionDescribe(on bool) { p.visionDescribeEnabled.Store(on) }
 func (p *ProxyServer) VisionDescribeEnabled() bool {
 	return p.visionDescribeEnabled.Load()
+}
+
+// SetSystemPromptOverride selects a [system_prompt.*] entry by name for
+// this backend live (web panel dropdown); "" clears it back to no
+// injection at all. An unrecognized name is accepted here without
+// validation (mirrors SetModelOverride) — injectSystemPrompt's map lookup
+// simply no-ops if p.cfg.SystemPrompts has nothing under that name.
+func (p *ProxyServer) SetSystemPromptOverride(name string) {
+	p.systemPromptMu.Lock()
+	defer p.systemPromptMu.Unlock()
+	p.systemPromptOverride = name
+}
+
+// SystemPromptOverride returns the currently selected name, or "" if none.
+func (p *ProxyServer) SystemPromptOverride() string {
+	p.systemPromptMu.RLock()
+	defer p.systemPromptMu.RUnlock()
+	return p.systemPromptOverride
+}
+
+// SystemPromptNames returns every configured [system_prompt.*] name,
+// sorted, for the web panel's dropdown options.
+func (p *ProxyServer) SystemPromptNames() []string {
+	names := make([]string, 0, len(p.cfg.SystemPrompts))
+	for name := range p.cfg.SystemPrompts {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 // EffectiveModel is what outgoing chat requests will actually carry: the live
@@ -586,6 +637,7 @@ func (p *ProxyServer) rejectRemoteOnly(w http.ResponseWriter, r *http.Request) {
 }
 
 func (p *ProxyServer) emit(ev UIEvent) {
+	ev.Listener = p.listenerName
 	select {
 	case p.events <- ev:
 	default:
@@ -597,6 +649,7 @@ func (p *ProxyServer) emitProgress(ev ProgressEvent) {
 	if p.progress == nil {
 		return
 	}
+	ev.Listener = p.listenerName
 	select {
 	case p.progress <- ev:
 	default:
@@ -699,6 +752,18 @@ func (p *ProxyServer) handleClassified(kind endpointKind) http.HandlerFunc {
 		if kind == kindChat {
 			if h := systemPromptHash(body); h != "" {
 				log.Printf("system_prompt_hash ingress: %s", h)
+			}
+		}
+
+		// [system_prompt.*]: prepend the selected named prompt (if any) to
+		// the client's own system message — deliberately AFTER the ingress
+		// hash log above, so that log keeps reflecting the client's own,
+		// pre-injection content (its whole purpose: a diff against it is
+		// proof something altered the prompt) rather than baking this
+		// intentional, configured modification in before the check.
+		if kind == kindChat {
+			if name := p.SystemPromptOverride(); name != "" {
+				injectSystemPrompt(body, p.cfg.SystemPrompts[name])
 			}
 		}
 
@@ -1565,6 +1630,83 @@ func systemPromptHash(body map[string]interface{}) string {
 		return hex.EncodeToString(sum[:6])
 	}
 	return ""
+}
+
+// injectSystemPrompt merges promptText into the FIRST system-role
+// message found anywhere in body["messages"] — never adds a second one
+// — and moves it to index 0 if it isn't already there, inserting a new
+// system message at the start only if none exists at all. For
+// ProxyServer.systemPromptOverride.
+//
+// Both of those rules are load-bearing, not cosmetic: confirmed directly
+// against llama-server (jinja chat template) that a SECOND system
+// message anywhere, or a lone system message NOT at index 0, both make
+// it reject the whole request with "Jinja Exception: System message must
+// be at the beginning" — a real production failure hit with OpenHands
+// (whose system message content is an array-of-parts, not a plain
+// string; the previous version of this function skipped merging into
+// that shape and inserted a second system message instead, which is
+// exactly what triggered it).
+//
+// content shape is handled per Go type: a plain string gets promptText
+// prepended with a blank-line separator; an array-of-parts gets a new
+// leading {"type":"text","text":promptText} part (preserving whatever
+// parts were already there); anything else (missing key, unexpected
+// type) is simply overwritten with promptText as a plain string, since
+// there's no known structure worth trying to preserve.
+//
+// Deliberately a pure, deterministic function of (promptText, the
+// client's own original content) — no timestamps, no randomness —
+// because prefix-cache reuse (llama-server's --cache-reuse) depends on
+// the exact same text landing in the exact same place on every request
+// that selects a given name; see Config.SystemPrompts' doc comment.
+func injectSystemPrompt(body map[string]interface{}, promptText string) {
+	if promptText == "" {
+		return
+	}
+	rawMessages, ok := body["messages"]
+	if !ok {
+		return
+	}
+	messages, ok := rawMessages.([]interface{})
+	if !ok {
+		return
+	}
+
+	for i, m := range messages {
+		msg, ok := m.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if role, _ := msg["role"].(string); role != "system" {
+			continue
+		}
+
+		switch content := msg["content"].(type) {
+		case string:
+			if content != "" {
+				msg["content"] = promptText + "\n\n" + content
+			} else {
+				msg["content"] = promptText
+			}
+		case []interface{}:
+			newPart := map[string]interface{}{"type": "text", "text": promptText}
+			msg["content"] = append([]interface{}{newPart}, content...)
+		default:
+			msg["content"] = promptText
+		}
+
+		if i != 0 {
+			rest := make([]interface{}, 0, len(messages)-1)
+			rest = append(rest, messages[:i]...)
+			rest = append(rest, messages[i+1:]...)
+			body["messages"] = append([]interface{}{msg}, rest...)
+		}
+		return
+	}
+
+	newSystemMsg := map[string]interface{}{"role": "system", "content": promptText}
+	body["messages"] = append([]interface{}{newSystemMsg}, messages...)
 }
 
 func extractClassificationText(body map[string]interface{}, kind endpointKind) string {

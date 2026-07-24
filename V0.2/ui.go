@@ -48,6 +48,12 @@ type UIEvent struct {
 	// matched alert_models. The dashboard accumulates this per model
 	// across the session (see dashboardModel.alertCounts).
 	AlertRounds int
+	// Listener is which supervised listener (Supervisor's registration
+	// name, e.g. "local", "claude") this request came in on — stamped by
+	// ProxyServer.emit, not set by callers. Lets the web panel attribute
+	// each log row / in-flight tick to a specific backend when several
+	// are running (and being used by different agents) at once.
+	Listener string
 }
 
 // maxLogLines is deliberately small (debug-friendly setting): entries are
@@ -113,6 +119,12 @@ type ProgressEvent struct {
 	// than whatever's "current" for the listener.
 	Model string
 	Done  bool
+	// Listener is which supervised listener (Supervisor's registration
+	// name, e.g. "local", "claude") this tick came from — stamped by
+	// ProxyServer.emitProgress, not set by callers. Lets the web panel's
+	// "In-flight" card attribute live progress to a specific backend, and
+	// offer a session selector when several are running at once.
+	Listener string
 }
 
 type uiEventMsg UIEvent
@@ -237,12 +249,15 @@ func (m dashboardModel) Init() tea.Cmd {
 
 // forceBucketKeys maps a keypress to the bucket it pins — checked in
 // Update's tea.KeyMsg case. "0" clears back to auto-detect rather than
-// mapping to a fifth bucket.
+// mapping to another bucket. "5" is agentic_loop, the force-only bucket
+// (no classification keywords — this keybinding and the web panel are
+// the ONLY ways it ever activates).
 var forceBucketKeys = map[string]TaskBucket{
 	"1": BucketStrictCode,
 	"2": BucketExploratoryCode,
 	"3": BucketExplanation,
 	"4": BucketArchitecture,
+	"5": BucketAgenticLoop,
 }
 
 func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -525,7 +540,7 @@ func (m dashboardModel) View() string {
 	}
 	b.WriteString(valueStyle.Render(modeLine) + "\n")
 
-	help := "1-4 force mode · 0 auto-detect · r toggle throughput · ctrl+c quit"
+	help := "1-5 force mode (5=agentic_loop) · 0 auto-detect · r toggle throughput · ctrl+c quit"
 	b.WriteString(valueStyle.Render(help) + "\n")
 
 	return b.String()

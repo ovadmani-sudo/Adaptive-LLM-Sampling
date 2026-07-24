@@ -79,7 +79,11 @@ go test ./...                     # full test suite
 - **Retry trajectory log** — every retried request's full adjustment
   history as JSONL, for data-driven tuning instead of guessing.
 - **Web control panel** (`--web`) — all backends at once with live
-  start/stop, per-listener sampling bypass, model picker, global toggles.
+  start/stop, per-listener sampling bypass, model picker, and independent
+  per-listener classification mode / vision describe / system prompt.
+- **Switch persistence** — every per-listener control (running, sampling
+  bypass, alert, model override, forced mode, vision describe, system
+  prompt) survives a process restart.
 - **Remote providers** — dedicated reverse-proxy port per configured
   vendor (claude/gemini/openai/openrouter/clinepass), with auth and model
   override.
@@ -177,8 +181,9 @@ client request arrives
   └─ forward cleaned request to the target model, unchanged routing
 ```
 
-- **Global**: applies to every listener (local and remote), toggleable
-  live from the web panel.
+- **Per-listener**: each backend (local + every remote provider) has its
+  own on/off switch, toggleable live from the web panel — one agent's
+  vision handling never affects another sharing this process.
 - **VLM endpoint is configurable**: `base_url` + optional `api_key` for a
   cloud VLM (default: Cline's gateway with `stepfun/step-3.7-flash`;
   the api_key falls back through `CLINEPASS_API_KEY` / the
@@ -270,13 +275,22 @@ forward-proxy), each on its own port, supervised:
 
 - Start/stop any listener live — the TCP port binds/unbinds on toggle.
 - Live mirror of the request log, in-flight indicator, sampling bars, and
-  throughput table over server-sent events.
+  throughput table over server-sent events. A **session selector** on the
+  In-flight card picks which listener's activity to show — several
+  listeners can each have their own request in flight at once (different
+  agents on different ports), so "All" (the default) just shows whichever
+  ticked most recently, same as before this existed; pinning to one name
+  stops it flickering between them.
 - Per-listener **pass-through sampling** toggle (client's own params, no
   retries) without stopping the listener.
 - Per-backend **model picker** — clinepass gets the full live catalog
   grouped by billing tier; takes effect next request.
-- Global **classification mode** force and **vision describe** toggle.
+- Per-listener **classification mode** force, **vision describe** toggle,
+  and **system prompt** selection — independent per backend, so several
+  agents sharing this process never leak one another's mode/prompt.
 - Alert-continuation toggle on the local backend.
+- Every switch above (plus running/stopped) survives a restart — see
+  "Switch persistence" below.
 
 The terminal dashboard still runs alongside when there's a TTY; headless
 (SSH/service) it's browser-only. Diagnostics: `proxy_web.log`.
@@ -286,6 +300,19 @@ The terminal dashboard still runs alongside when there's a TTY; headless
 (`~/.config/clinepass-connector/config.json`), prompting once on a
 terminal if none is found. clinepass chat requires an API key — the
 account/browser login is rejected by its chat endpoint.
+
+### Switch persistence (`listener_state.json`)
+
+Every per-listener control panel switch — running/stopped, sampling
+bypass, alert, model override, forced classification mode, vision
+describe, system prompt — is written to `listener_state.json` (next to
+the binary) on every change, and reapplied on the next `--web` startup
+before the usual local/forward-proxy auto-start runs. A listener with no
+saved entry (a new name, or the very first run) just keeps its
+config.ini/CLI-flag defaults, so this is purely additive: restarting the
+process resumes exactly where the panel was left instead of resetting
+every agent's mode back to config.ini, but a fresh install behaves
+exactly as before this feature existed.
 
 ### Remote providers (`[provider.*]`)
 

@@ -24,7 +24,7 @@ const controlPanelHTML = `<!doctype html>
   header{padding:16px 20px;border-bottom:1px solid var(--line);display:flex;align-items:baseline;gap:12px;flex-wrap:wrap}
   header h1{font-size:16px;margin:0;font-weight:650}
   header .sub{color:var(--muted);font-size:12px}
-  main{max-width:1100px;margin:0 auto;padding:20px;display:grid;gap:20px;grid-template-columns:1fr 1fr}
+  main{max-width:1100px;margin:0 auto;padding:20px;display:grid;gap:20px;grid-template-columns:1fr 1fr;align-items:start}
   .full{grid-column:1/-1}
   .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px}
   .card h2{font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:0 0 12px}
@@ -74,26 +74,26 @@ const controlPanelHTML = `<!doctype html>
 </header>
 <main>
   <section class="card full">
-    <h2 id="listeners-toggle" style="cursor:pointer;user-select:none"><span id="listeners-caret">▾</span> Listeners</h2>
+    <h2 id="listeners-toggle" style="cursor:pointer;user-select:none"><span id="listeners-caret">▾</span> Settings</h2>
     <div id="listeners-wrap">
+    <p class="muted" style="margin:0 0 10px;font-size:12px">Every setting below is per-listener: running several agents through this process on different ports keeps each one's mode/vision/system-prompt independent.</p>
+    <div style="overflow-x:auto">
     <table id="listeners"><thead><tr>
-      <th style="width:90px">Enabled</th><th>Name</th><th>Kind</th><th>Port</th>
-      <th>Model</th><th>Pass-through sampling</th><th>Alert (local)</th><th></th>
+      <th style="width:80px">Enabled</th><th>Name</th><th>Kind</th><th>Port</th>
+      <th>Model</th><th>Mode</th><th>Vision</th><th>System prompt</th>
+      <th>Pass-through sampling</th><th>Alert (local)</th><th></th>
     </tr></thead><tbody></tbody></table>
+    </div>
     </div>
   </section>
 
-  <section class="card">
-    <h2>Classification mode</h2>
-    <div class="bucketrow" id="buckets"></div>
-    <p class="muted" style="margin:10px 0 0;font-size:12px">Forcing a mode applies to every backend. "Auto-detect" restores per-request classification.</p>
-    <h2 style="margin-top:18px">Vision describe</h2>
-    <label class="switch"><input type="checkbox" id="vision-toggle" onchange="post('/api/vision?on='+this.checked)"><span class="slider"></span></label>
-    <p class="muted" style="margin:10px 0 0;font-size:12px">Global: images in any request (every backend) are described once by the configured VLM and replaced with text before reaching the target model.</p>
-  </section>
-
-  <section class="card">
-    <h2>In-flight</h2>
+  <section class="card full">
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:12px">
+      <h2 style="margin:0">In-flight</h2>
+      <label class="muted" style="font-size:12px">Session:
+        <select id="inflight-session" class="btn"><option value="">All</option></select>
+      </label>
+    </div>
     <div id="inflight">idle</div>
     <div class="bars" id="bars" style="margin-top:12px"></div>
   </section>
@@ -126,7 +126,7 @@ const controlPanelHTML = `<!doctype html>
 </main>
 
 <script>
-const BUCKETS = ["strict_code","exploratory_code","explanation","architecture"];
+const BUCKETS = ["strict_code","exploratory_code","explanation","architecture","agentic_loop"];
 const $ = s => document.querySelector(s);
 
 async function post(url){ try{ await fetch(url,{method:"POST"}); }catch(e){} refresh(); }
@@ -159,11 +159,34 @@ function renderListeners(list){
       alert = "<label class=switch><input type=checkbox "+(l.alert?"checked":"")+
         " onchange=\"post('/api/alert?name=local&on='+this.checked)\"><span class=slider></span></label>";
     }
+    // Mode/Vision/System prompt are all per-listener (see ListenerStatus) —
+    // "—" for a pure-passthrough listener with no backing ProxyServer
+    // (l.supports_bypass is false for those, same flag bypass/alert use).
+    let mode = "<span class=muted>—</span>";
+    let vision = "<span class=muted>—</span>";
+    let sysPrompt = "<span class=muted>—</span>";
+    if(l.supports_bypass){
+      let modeHtml = "<select class=btn onchange=\"post('/api/bucket?name="+encodeURIComponent(l.name)+"&bucket='+encodeURIComponent(this.value))\">";
+      modeHtml += "<option value=''"+(!l.forced_bucket?" selected":"")+">auto-detect</option>";
+      for(const bk of BUCKETS) modeHtml += "<option value='"+bk+"'"+(l.forced_bucket===bk?" selected":"")+">"+bk+"</option>";
+      mode = modeHtml+"</select>";
+
+      vision = "<label class=switch><input type=checkbox "+(l.vision_describe?"checked":"")+
+        " onchange=\"post('/api/vision?name="+encodeURIComponent(l.name)+"&on='+this.checked)\"><span class=slider></span></label>";
+
+      let spHtml = "<select class=btn onchange=\"post('/api/system_prompt?name="+encodeURIComponent(l.name)+"&prompt='+encodeURIComponent(this.value))\">";
+      spHtml += "<option value=''"+(!l.system_prompt?" selected":"")+">(none)</option>";
+      for(const n of (_systemPromptNames||[])) spHtml += "<option value='"+n+"'"+(l.system_prompt===n?" selected":"")+">"+n+"</option>";
+      sysPrompt = spHtml+"</select>";
+    }
     tr.innerHTML = "<td>"+enabled+"</td>"+
       "<td><span class='dot "+(l.running?"on":"offd")+"'></span><code>"+l.name+"</code></td>"+
       "<td><span class=pill>"+l.kind+"</span></td>"+
       "<td><code>"+l.port+"</code></td>"+
       "<td>"+model+"</td>"+
+      "<td>"+mode+"</td>"+
+      "<td>"+vision+"</td>"+
+      "<td>"+sysPrompt+"</td>"+
       "<td>"+bypass+"</td><td>"+alert+"</td><td>"+err+"</td>";
     tb.appendChild(tr);
   }
@@ -194,19 +217,6 @@ async function populateClinepassModels(){
     html += "</optgroup>";
   }
   sel.innerHTML = html;
-}
-
-function renderBuckets(forced){
-  const box = $("#buckets"); box.innerHTML = "";
-  const mk = (label,val)=>{
-    const b = document.createElement("button");
-    b.className = "btn"+((forced||"")===val?" active":"");
-    b.textContent = label;
-    b.onclick = ()=>post("/api/bucket?bucket="+encodeURIComponent(val));
-    return b;
-  };
-  box.appendChild(mk("auto-detect",""));
-  for(const bk of BUCKETS) box.appendChild(mk(bk,bk));
 }
 
 // Throughput table state: raw rows from the last /api/status, the active
@@ -305,21 +315,27 @@ function initThroughputControls(){
   }
 }
 
+// _systemPromptNames is the global menu of configured [system_prompt.*]
+// names (identical everywhere, unlike the per-listener selection) — set
+// on each refresh() and read by renderListeners when building each row's
+// System prompt <select>.
+let _systemPromptNames = [];
+
 async function refresh(){
   try{
     const s = await (await fetch("/api/status")).json();
+    _systemPromptNames = s.system_prompts || [];
+    renderSessionOptions((s.listeners||[]).filter(l=>l.supports_bypass).map(l=>l.name));
     // Don't rebuild the listeners table while the user has a dropdown open
-    // (activeElement is the SELECT) — re-rendering would destroy the open
-    // menu and commit whatever option is under the cursor. Skip just the
-    // table this cycle; the rest still updates.
+    // (activeElement is a SELECT inside it) — re-rendering would destroy
+    // the open menu and could commit whatever option is under the cursor.
+    // Skip just the table this cycle; the rest still updates.
     const ae = document.activeElement;
-    if(!(ae && ae.tagName === "SELECT")){
+    const aeInListeners = ae && ae.tagName === "SELECT" && $("#listeners").contains(ae);
+    if(!aeInListeners){
       renderListeners(s.listeners||[]);
     }
-    renderBuckets(s.forced_bucket);
     renderThroughput(s.throughput||[]);
-    const vt = $("#vision-toggle");
-    if(vt && document.activeElement !== vt) vt.checked = !!s.vision_describe;
   }catch(e){}
 }
 
@@ -363,24 +379,59 @@ function bar(label,val,max){
   const pct = Math.max(0,Math.min(100, (val/max)*100));
   return "<span class=muted>"+label+"</span><span class=bar><span style='width:"+pct+"%'></span></span><span>"+val+"</span>";
 }
+
+// Multiple listeners can each have their own in-flight request at once
+// (several agents sharing this process on different ports) — the events
+// they emit are otherwise indistinguishable in one merged SSE stream, so
+// per-listener state is kept here and the #inflight-session dropdown
+// picks which one the "In-flight" card renders. "" (All) reproduces the
+// old merged behavior: whichever listener ticked most recently.
+const inFlightByListener = {};  // listener name -> latest ProgressEvent
+const lastBarsByListener = {};  // listener name -> latest completed UIEvent
+let lastProgressGlobal = null;
+let lastBarsGlobal = null;
+const sessionSel = $("#inflight-session");
+
 function showBars(ev){
   const b = $("#bars");
+  if(!ev){ b.innerHTML=""; return; }
   b.innerHTML = bar("temp",(ev.Temperature||0).toFixed(2),2)+
     bar("top_p",(ev.TopP||0).toFixed(2),1)+
     bar("top_k",ev.TopK||0,100)+
     bar("budget",ev.ThinkingBudgetTokens||0,8192)+
     bar("rep_pen",(ev.RepeatPenalty||0).toFixed(2),2);
 }
+function renderBars(){
+  const sel = sessionSel.value;
+  showBars(sel ? lastBarsByListener[sel] : lastBarsGlobal);
+}
 
 const inflight = $("#inflight");
-function showInflight(p){
-  if(p.Done){ inflight.textContent="idle"; inflight.className=""; return; }
+function showInflight(p, showWho){
+  if(!p || p.Done){ inflight.textContent="idle"; inflight.className=""; return; }
   inflight.className="active";
   const label = p.Label || (p.Bucket+" · attempt "+(p.Attempt||0));
   const model = p.Model ? " ["+p.Model+"]" : "";
   const rate = p.GenerationElapsedMs>0 ? " · "+(p.ApproxTokens/(p.GenerationElapsedMs/1000)).toFixed(1)+" tok/s" : "";
-  inflight.textContent = "▶ "+label+model+" · "+((p.ElapsedMs||0)/1000).toFixed(1)+"s · "+(p.ApproxTokens||0)+" tok"+rate;
+  const who = showWho && p.Listener ? " <span class=muted>("+p.Listener+")</span>" : "";
+  inflight.innerHTML = "▶ "+label+model+" · "+((p.ElapsedMs||0)/1000).toFixed(1)+"s · "+(p.ApproxTokens||0)+" tok"+rate+who;
 }
+function renderInflight(){
+  const sel = sessionSel.value;
+  showInflight(sel ? inFlightByListener[sel] : lastProgressGlobal, !sel);
+}
+
+// Rebuilds the session dropdown's options from the current listener list,
+// preserving the user's selection if it still exists (a listener that
+// disappears — e.g. never configured — falls back to "All").
+function renderSessionOptions(names){
+  const cur = sessionSel.value;
+  let html = "<option value=''>All</option>";
+  for(const n of names) html += "<option value='"+n+"'"+(n===cur?" selected":"")+">"+n+"</option>";
+  if(sessionSel.innerHTML !== html) sessionSel.innerHTML = html;
+  if(cur && !names.includes(cur)) sessionSel.value = "";
+}
+sessionSel.onchange = ()=>{ renderInflight(); renderBars(); };
 
 function connect(){
   const es = new EventSource("/api/events");
@@ -388,8 +439,18 @@ function connect(){
   es.onerror = ()=>{ $("#conn").textContent="○ reconnecting…"; };
   es.onmessage = (m)=>{
     let d; try{ d=JSON.parse(m.data); }catch(e){ return; }
-    if(d.kind==="event"){ addLog(d.data); showBars(d.data); }
-    else if(d.kind==="progress"){ showInflight(d.data); }
+    if(d.kind==="event"){
+      addLog(d.data);
+      const name = d.data.Listener || "";
+      lastBarsByListener[name] = d.data;
+      lastBarsGlobal = d.data;
+      renderBars();
+    } else if(d.kind==="progress"){
+      const name = d.data.Listener || "";
+      inFlightByListener[name] = d.data;
+      lastProgressGlobal = d.data;
+      renderInflight();
+    }
   };
 }
 

@@ -75,13 +75,20 @@ touching Cline's own settings:
 ./llama-dyn-proxy openrouter
 ```
 
-Valid names are `claude`, `gemini`, `openai`, `openrouter` — each configured
-under its own `[provider.<name>]` section (`listen_port`, `base_url`,
-`api_key`, optional `model`) right below `[server]` in `config.ini`. An
-unrecognized name fails fast with a clear error listing the valid options,
-rather than silently falling back to local.
+Valid names are `claude`, `gemini`, `openai`, `openrouter`, `clinepass` —
+each configured under its own `[provider.<name>]` section (`listen_port`,
+`base_url`, `api_key`, optional `model`) right below `[server]` in
+`config.ini`. An unrecognized name fails fast with a clear error listing the
+valid options, rather than silently falling back to local.
 
-**Each provider has its own `listen_port`** (9092, 9093, 9094, 9095 by
+`clinepass` is Cline's own hosted OpenAI-compatible gateway
+(`api.cline.bot`), not a model vendor's API directly — use it if you want to
+route through your Cline account/billing instead of hitting a vendor (Google,
+Anthropic, OpenAI, OpenRouter) directly. It's authenticated and configured
+exactly like every other provider (own `listen_port`, own `CLINEPASS_API_KEY`
+env var), just pointed at a different upstream.
+
+**Each provider has its own `listen_port`** (9092, 9093, 9094, 9095, 9096 by
 default), separate from `[server]`'s. That means you can run several
 instances of this proxy side by side — one per backend — each on a stable,
 predictable port, and point different Cline profiles at whichever one you
@@ -94,9 +101,9 @@ need without them fighting over the same port:
 ```
 
 **API keys**: `{PROVIDER}_API_KEY` in the environment (e.g.
-`OPENROUTER_API_KEY`, `OPENAI_API_KEY`, `CLAUDE_API_KEY`, `GEMINI_API_KEY`)
-always wins over `api_key` in `config.ini`, so a real key never has to sit
-in plaintext on disk:
+`OPENROUTER_API_KEY`, `OPENAI_API_KEY`, `CLAUDE_API_KEY`, `GEMINI_API_KEY`,
+`CLINEPASS_API_KEY`) always wins over `api_key` in `config.ini`, so a real
+key never has to sit in plaintext on disk:
 
 ```sh
 OPENROUTER_API_KEY=sk-or-v1-... ./llama-dyn-proxy openrouter

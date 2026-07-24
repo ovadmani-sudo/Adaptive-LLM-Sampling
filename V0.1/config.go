@@ -37,9 +37,9 @@ request_timeout_seconds = 600
 #
 # api_key here is a fallback only: if the environment variable
 # {PROVIDER}_API_KEY is set (e.g. OPENROUTER_API_KEY, OPENAI_API_KEY,
-# CLAUDE_API_KEY, GEMINI_API_KEY), it always wins over whatever is written
-# below, so a real key never has to sit in plaintext in this file. Prefer
-# the env var and leave api_key blank here.
+# CLAUDE_API_KEY, GEMINI_API_KEY, CLINEPASS_API_KEY), it always wins over
+# whatever is written below, so a real key never has to sit in plaintext in
+# this file. Prefer the env var and leave api_key blank here.
 #
 # These base URLs were verified against each provider's current docs, but
 # are third-party services outside this proxy's control — double check
@@ -84,6 +84,17 @@ tokens_sec_multiplier = 1.0
 [provider.openrouter]
 listen_port = 9095
 base_url = https://openrouter.ai/api/v1
+api_key =
+model =
+tokens_sec_multiplier = 1.0
+
+# Cline's own hosted gateway — a Cline account credential (CLINEPASS_API_KEY),
+# not a vendor API key, multiplexed across whichever models Cline's gateway
+# backs. Only useful if you specifically want to route through Cline's
+# account/billing rather than a model vendor directly.
+[provider.clinepass]
+listen_port = 9096
+base_url = https://api.cline.bot/api/v1
 api_key =
 model =
 tokens_sec_multiplier = 1.0
@@ -245,11 +256,18 @@ const (
 	ProviderGemini     ProviderName = "gemini"
 	ProviderOpenAI     ProviderName = "openai"
 	ProviderOpenRouter ProviderName = "openrouter"
+	// ProviderClinepass is Cline's own hosted OpenAI-compatible gateway
+	// (api.cline.bot), distinct from hitting a model vendor's API directly
+	// — it multiplexes several backing models under one Cline account
+	// credential rather than a vendor-issued key.
+	ProviderClinepass ProviderName = "clinepass"
 )
 
 // KnownProviders lists every provider name recognized as a CLI argument,
-// in the order they're listed when reporting an invalid selection.
-var KnownProviders = []ProviderName{ProviderClaude, ProviderGemini, ProviderOpenAI, ProviderOpenRouter}
+// in the order they're listed when reporting an invalid selection. New
+// entries are appended, not inserted, so existing providers keep their
+// already-documented default listen_port.
+var KnownProviders = []ProviderName{ProviderClaude, ProviderGemini, ProviderOpenAI, ProviderOpenRouter, ProviderClinepass}
 
 // ProviderConfig holds a remote OpenAI-compatible backend's connection
 // details. Model is optional: empty means "forward whatever the client
